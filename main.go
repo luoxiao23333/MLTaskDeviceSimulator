@@ -35,6 +35,7 @@ type MetricsStat struct {
 	AvgMemoryUsage float64       `csv:"AvgMemoryUsage"`
 	MaxMemoryUsage int64         `csv:"MaxMemoryUsage"`
 	HighLoadRatio  float64       `csv:"HighLoadRatio"`
+	TaskNumber     int			 `csv:"TaskNumber"`
 }
 
 var waitGroup sync.WaitGroup
@@ -64,9 +65,9 @@ func main() {
 			var results []MetricsStat
 			// map[int]MetricsStat
 			var metricsMap = make(map[int]MetricsStat)
-			for cpu := 1000; cpu <= 8000; cpu += 100 {
+			for cpu := 1000; cpu <= 6000; cpu += 100 {
 				var cpuLimit string
-				if cpu == 8000 {
+				if cpu == 6000 {
 					cpuLimit = "0"
 				} else {
 					cpuLimit = strconv.Itoa(cpu) + "m"
@@ -75,10 +76,8 @@ func main() {
 				var slamIDs []string
 				wg := sync.WaitGroup{}
 				lock := sync.Mutex{}
-				taskNumber := int(math.Floor((cores * 1000 * 0.7) / float64(cpu)))
-				if taskNumber < 6 {
-					taskNumber = 6
-				}
+				taskNumber := int(math.Floor((cores * 1000 * 0.8) / float64(cpu)))
+				//taskNumber = 1
 				wg.Add(taskNumber)
 				for i := 0; i < taskNumber; i++ {
 					go func() {
@@ -90,31 +89,36 @@ func main() {
 					}()
 				}
 				wg.Wait()
+				slamID = slamIDs[len(slamIDs)-1]
 				start := time.Now()
 				dataMap := make(map[string]*ResourceUsage)
+				var end time.Duration
 				for {
 					usage := queryMetrics(slamID)
-					if usage == nil {
-						done := false
-						for _, id := range slamIDs {
-							if id != slamID {
-								check := queryMetrics(slamID)
-								if check != nil {
-									done = true
+					dataMap[usage.CollectedTime] = usage
+					if usage.Available == false && usage.CollectedTime == "Task has been ended" {
+						end = time.Since(start)
+						for {
+							done := true
+							for _, id := range slamIDs {
+								if id != slamID {
+									check := queryMetrics(slamID)
+									if !(check.Available == false && check.CollectedTime == "Task has been ended") {
+										done = false
+									}
 								}
 							}
+							if done {
+								goto collectedEnd
+							}
 						}
-						if done {
-							break
-						}
-					}
-					dataMap[usage.CollectedTime] = usage
-					if usage.Available == false && len(dataMap) > 1 {
-						break
 					}
 					time.Sleep(1 * time.Second)
 				}
-				log.Printf("Execution time is %v for cpu limits: %v", time.Since(start), cpu)
+			collectedEnd:
+				log.Printf("Execution time is %v for cpu limits: %v", end, cpu)
+				log.Printf("Wait for 1 min to let all pod deleted")
+				time.Sleep(1 * time.Minute)
 				var maxCPU int64 = 0
 				var maxMem int64 = 0
 				var detailResults []ResourceUsage
@@ -160,16 +164,17 @@ func main() {
 
 				metricsMap[cpu] = MetricsStat{
 					CPULimit:       cpuLimit,
-					AET:            time.Since(start),
+					AET:            end,
 					AvgCPUUsage:    avgCPU,
 					MaxCPUUsage:    maxCPU,
 					AvgMemoryUsage: avgMem,
 					MaxMemoryUsage: maxMem,
 					HighLoadRatio:  float64(len(dataMap)) / float64(count),
+					TaskNumber:     taskNumber,
 				}
 			}
 
-			for cpu := 1000; cpu <= 8000; cpu += 100 {
+			for cpu := 1000; cpu <= 6000; cpu += 100 {
 				metrics, _ := metricsMap[cpu]
 				log.Printf("Node:%v, metrics data is %v",
 					nodeName, metrics)

@@ -1,0 +1,6 @@
+CPU,Memory,Storage,StorageEphemeral,CollectedTime,Window,Available,PodName
+0,0,0,0,Pod Not Found,0,false,
+1709,554004480000,0,0,2023-03-29 07:36:14 +0000 UTC,4031,true,slam-20106-k8s-as1
+2201,607576064000,0,0,2023-03-29 07:36:31 +0000 UTC,17615,true,slam-20106-k8s-as1
+2216,625491968000,0,0,2023-03-29 07:36:47 +0000 UTC,15927,true,slam-20106-k8s-as1
+0,0,0,0,Task has been ended,0,false,
