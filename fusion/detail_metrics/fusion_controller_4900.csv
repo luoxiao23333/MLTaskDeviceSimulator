@@ -1,0 +1,4 @@
+CPU,Memory,Storage,StorageEphemeral,CollectedTime,Window,Available,PodName
+5,432955392000,0,0,2023-04-26 09:19:00 +0000 UTC,11685,true,fusion-20039-controller
+699,473272320000,0,0,2023-04-26 09:19:15 +0000 UTC,15121,true,fusion-20039-controller
+4722,559071232000,0,0,2023-04-26 09:19:31 +0000 UTC,15489,true,fusion-20039-controller

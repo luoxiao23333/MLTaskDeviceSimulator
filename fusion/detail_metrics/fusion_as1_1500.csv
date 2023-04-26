@@ -1,0 +1,4 @@
+CPU,Memory,Storage,StorageEphemeral,CollectedTime,Window,Available,PodName
+9,432816128000,0,0,2023-04-26 08:28:22 +0000 UTC,13681,true,fusion-20005-k8s-as1
+327,475557888000,0,0,2023-04-26 08:28:37 +0000 UTC,15048,true,fusion-20005-k8s-as1
+1490,540045312000,0,0,2023-04-26 08:28:54 +0000 UTC,16851,true,fusion-20005-k8s-as1
