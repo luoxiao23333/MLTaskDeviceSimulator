@@ -127,16 +127,29 @@ func main() {
 	var sumMetrics []CompleteMetrics
 
 	for _, fusionNodeName := range []string{"as1", "controller"} {
-		for cpuLimit := 1000; cpuLimit <= 5000; cpuLimit += 100 {
-			for _, gpuLimit := range []int{25, 33, 50, 100} {
+		for _, gpuLimit := range []int{16, 20, 25, 33, 50, 100} {
+			for cpuLimit := 1000; cpuLimit <= 5000; cpuLimit += 100 {
 				log.Printf("for cpu[%v] gpu[%v] fusion node[%v]",
 					cpuLimit, gpuLimit, fusionNodeName)
 				metrics := testCompleteTask(fusionNodeName, cpuLimit, gpuLimit)
 				sumMetrics = append(sumMetrics, metrics)
-				time.Sleep(10 * time.Second)
+				time.Sleep(5 * time.Second)
 			}
 		}
 	}
+	/*
+		for _, fusionNodeName := range []string{"as1"} {
+			for cpuLimit := 5000; cpuLimit <= 5000; cpuLimit += 100 {
+				for _, gpuLimit := range []int{16, 20, 25, 33, 50, 100} {
+					log.Printf("for cpu[%v] gpu[%v] fusion node[%v]",
+						cpuLimit, gpuLimit, fusionNodeName)
+					metrics := testCompleteTask(fusionNodeName, cpuLimit, gpuLimit)
+					sumMetrics = append(sumMetrics, metrics)
+					time.Sleep(10 * time.Second)
+				}
+			}
+		}
+	*/
 
 	file, err := os.Create("complete_task/sum_metrics.csv")
 	if err != nil {
@@ -753,7 +766,7 @@ func testCompleteTask(fusionNodeName string, cpuLimit, gpuLimit int) CompleteMet
 
 	detailMetricsMap := make(map[string]*ResourceUsage)
 
-	waitTime := int(time.Second) * 60
+	waitTime := int(time.Second) * 10
 	log.Printf("Wait for extra %v", time.Duration(waitTime))
 	time.Sleep(time.Duration(waitTime))
 
