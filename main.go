@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,7 +30,7 @@ const fusionImageName = "input.png"
 const detImageDir = "det/data/20/"
 const detImageName = "input.png"
 
-const completTaskImageDir = "complete_task/data/20/"
+const completTaskImageDir = "complete_task/data/00/"
 const complteTaskImageName = "input.png"
 
 const clusterURL = "http://192.168.1.101:8081"
@@ -126,15 +127,73 @@ func main() {
 
 	var sumMetrics []CompleteMetrics
 
-	for _, fusionNodeName := range []string{"as1", "controller"} {
-		for _, gpuLimit := range []int{16, 20, 25, 33, 50, 100} {
-			for cpuLimit := 1000; cpuLimit <= 5000; cpuLimit += 100 {
+	restartScheduler()
+	time.Sleep(5 * time.Second)
+
+	// warm up gpu, eliminate the diff of performance in cool and hot
+
+	for warmUpIter := 0; warmUpIter < 10; warmUpIter++ {
+		testCompleteTask("as1", 0, 0, false)
+	}
+
+	restartScheduler()
+
+	createRange := func(lower int, upper int, step int) []int {
+		upper += step
+		nums := make([]int, (upper-lower)/step)
+		for i := range nums {
+			nums[i] = lower + step*i
+		}
+		return nums
+	}
+
+	cpuLimits := map[string][]int{
+		"controller": createRange(1000, 5000, 200),
+		"as1":        createRange(400, 3000, 200),
+	}
+
+	workerNumbers := map[int]int{
+		25: 4, 33: 3, 50: 2, 100: 1,
+	}
+
+	for _, fusionNodeName := range []string{"controller", "as1"} {
+		for _, gpuLimit := range []int{25, 33, 50, 100} {
+			for _, cpuLimit := range cpuLimits[fusionNodeName] {
 				log.Printf("for cpu[%v] gpu[%v] fusion node[%v]",
 					cpuLimit, gpuLimit, fusionNodeName)
-				metrics := testCompleteTask(fusionNodeName, cpuLimit, gpuLimit)
+
+				wg := sync.WaitGroup{}
+				workerNumber := workerNumbers[gpuLimit]
+				wg.Add(workerNumber - 1)
+				for i := 0; i < workerNumber-1; i++ {
+					go func() {
+						testCompleteTask(fusionNodeName, cpuLimit, gpuLimit, false)
+						wg.Done()
+					}()
+				}
+
+				metrics := testCompleteTask(fusionNodeName, cpuLimit, gpuLimit, true)
 				sumMetrics = append(sumMetrics, metrics)
+
+				wg.Wait()
 				time.Sleep(5 * time.Second)
 			}
+			restartScheduler()
+			time.Sleep(20 * time.Second)
+		}
+
+		file, err := os.Create(fmt.Sprintf("complete_task/sum_metrics_%v.csv", fusionNodeName))
+		if err != nil {
+			log.Panic(err)
+		}
+
+		_, err = file.Write(utils.MarshalCSV(sumMetrics))
+		if err != nil {
+			log.Panic(err)
+		}
+
+		if err = file.Close(); err != nil {
+			log.Panic(err)
 		}
 	}
 	/*
@@ -150,20 +209,25 @@ func main() {
 			}
 		}
 	*/
+}
 
-	file, err := os.Create("complete_task/sum_metrics.csv")
+func restartScheduler() {
+	cmd := exec.Command("kubectl", "delete", "pod", "--all")
+
+	// 设置环境变量
+	env := []string{"KUBECONFIG=/etc/kubernetes/admin.conf"}
+	cmd.Env = append(cmd.Env, env...)
+
+	// 执行命令
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	err := cmd.Run()
 	if err != nil {
-		log.Panic(err)
+		fmt.Println("Error:", err)
+		return
 	}
 
-	_, err = file.Write(utils.MarshalCSV(sumMetrics))
-	if err != nil {
-		log.Panic(err)
-	}
-
-	if err = file.Close(); err != nil {
-		log.Panic(err)
-	}
+	fmt.Println(out.String())
 }
 
 func testDET(nodeList []string, gpuLimits, taskNumbers []int) {
@@ -709,11 +773,11 @@ type CompleteMetrics struct {
 	FusionNodeName string  `csv:"fusion_node_name"`
 	GpuLimit       int     `csv:"gpu_limit"`
 	CpuLimit       int     `csv:"cpu_limit"`
-	MaxCpuUsage    int     `csv:"max_cpu_usage"`
 	AvgLatency     float64 `csv:"avg_latency"`
 }
 
-func testCompleteTask(fusionNodeName string, cpuLimit, gpuLimit int) CompleteMetrics {
+func testCompleteTask(fusionNodeName string, cpuLimit, gpuLimit int,
+	writeResult bool) CompleteMetrics {
 	fusionResult := ""
 
 	detWorkerCreateInfo := &CreateInfo{
@@ -761,21 +825,24 @@ func testCompleteTask(fusionNodeName string, cpuLimit, gpuLimit int) CompleteMet
 	createGeneralWorkers(detWorkerCreateInfo)
 	createGeneralWorkers(fusionWorkerCreateInfo)
 
-	const imageLength = 837
+	const imageLength = 465
 	var metricsMap = make(map[int]MetricsStat)
 
 	detailMetricsMap := make(map[string]*ResourceUsage)
 
-	waitTime := int(time.Second) * 10
-	log.Printf("Wait for extra %v", time.Duration(waitTime))
+	waitTime := int(time.Second) * 30
+	if writeResult {
+		log.Printf("Wait for extra %v", time.Duration(waitTime))
+	}
 	time.Sleep(time.Duration(waitTime))
 
 	var latencies []time.Duration
-	startTime := time.Now()
 	queryTime := time.Now()
 	eachFrameTime := time.Now()
 	for imageIndex := 0; imageIndex < imageLength; imageIndex++ {
-		fmt.Printf("\rDoing image %v/%v", imageIndex, imageLength)
+		if writeResult {
+			fmt.Printf("\rDoing image %v/%v", imageIndex, imageLength)
+		}
 		os.Stdin.Sync()
 		if taskInfo.FusionTaskID == "-1" {
 			taskInfo.Status = "Begin"
@@ -793,14 +860,6 @@ func testCompleteTask(fusionNodeName string, cpuLimit, gpuLimit int) CompleteMet
 			latencies = append(latencies, time.Since(eachFrameTime))
 		}
 
-		duration := time.Since(startTime)
-		needToWait := time.Duration(int64(float64(imageIndex)*(1000./30.))) * time.Millisecond
-		if duration < needToWait {
-			diff := needToWait - duration
-			log.Printf("Wait %v", time.Duration(diff))
-			time.Sleep(time.Duration(diff))
-		}
-
 		eachFrameTime = time.Now()
 		imagePath := completTaskImageDir + utils.IntToNDigitsString(imageIndex, 6) + ".png"
 		detTaskID, fusionTaskID := sendCompletTaskRequest(*taskInfo, imagePath)
@@ -815,8 +874,8 @@ func testCompleteTask(fusionNodeName string, cpuLimit, gpuLimit int) CompleteMet
 		if taskInfo.Status == "Running" {
 			queryDuration := time.Since(queryTime)
 			if queryDuration.Seconds() >= 2 {
-				usage := queryMetrics(taskInfo.FusionTaskID)
-				detailMetricsMap[usage.CollectedTime] = usage
+				//usage := queryMetrics(taskInfo.FusionTaskID)
+				//detailMetricsMap[usage.CollectedTime] = usage
 				queryTime = time.Now()
 			}
 		} else if taskInfo.Status == "Last" {
@@ -828,117 +887,120 @@ func testCompleteTask(fusionNodeName string, cpuLimit, gpuLimit int) CompleteMet
 
 	}
 
-	avgLatency := 0.
-	for _, l := range latencies {
-		avgLatency += float64(l.Milliseconds())
-	}
-	avgLatency = avgLatency / float64(len(latencies))
+	if writeResult {
 
-	log.Printf("Avg latency is %v ms for gpu limits: %v", avgLatency, gpuLimit)
-	var maxCPU int64 = 0
-	var maxMem int64 = 0
-	var detailResults []ResourceUsage
-	for _, item := range detailMetricsMap {
-		if item.CPU > maxCPU {
-			maxCPU = item.CPU
+		avgLatency := 0.
+		for _, l := range latencies {
+			avgLatency += float64(l.Milliseconds())
 		}
-		if item.Memory > maxMem {
-			maxMem = item.Memory
+		avgLatency = avgLatency / float64(len(latencies))
+
+		log.Printf("Avg latency is %v ms for gpu limits: %v", avgLatency, gpuLimit)
+		var maxCPU int64 = 0
+		var maxMem int64 = 0
+		var detailResults []ResourceUsage
+		for _, item := range detailMetricsMap {
+			if item.CPU > maxCPU {
+				maxCPU = item.CPU
+			}
+			if item.Memory > maxMem {
+				maxMem = item.Memory
+			}
+			detailResults = append(detailResults, *item)
 		}
-		detailResults = append(detailResults, *item)
-	}
 
-	file, err := os.Create(fmt.Sprintf("complete_task/detail_metrics/%v_%v_%v_%v.csv",
-		"fusion", fusionNodeName, gpuLimit, cpuLimit))
-	if err != nil {
-		log.Panic(err)
-	}
+		file, err := os.Create(fmt.Sprintf("complete_task/detail_metrics/%v_%v_%v_%v.csv",
+			"fusion", fusionNodeName, gpuLimit, cpuLimit))
+		if err != nil {
+			log.Panic(err)
+		}
 
-	_, err = file.Write(utils.MarshalCSV(detailResults))
-	if err != nil {
-		log.Panic(err)
-	}
+		_, err = file.Write(utils.MarshalCSV(detailResults))
+		if err != nil {
+			log.Panic(err)
+		}
 
-	if err = file.Close(); err != nil {
-		log.Panic(err)
-	}
+		if err = file.Close(); err != nil {
+			log.Panic(err)
+		}
 
-	file, err = os.Create(fmt.Sprintf("complete_task/detail_metrics/latencies_%v_%v_%v.csv",
-		fusionNodeName, gpuLimit, cpuLimit))
-	if err != nil {
-		log.Panic(err)
-	}
+		file, err = os.Create(fmt.Sprintf("complete_task/detail_metrics/latencies_%v_%v_%v.csv",
+			fusionNodeName, gpuLimit, cpuLimit))
+		if err != nil {
+			log.Panic(err)
+		}
 
-	var latenciesString string
-	for _, latency := range latencies {
-		latenciesString = latenciesString + fmt.Sprintf("%v\n", latency.Milliseconds())
-	}
+		var latenciesString string
+		for _, latency := range latencies {
+			latenciesString = latenciesString + fmt.Sprintf("%v\n", latency.Milliseconds())
+		}
 
-	_, err = file.Write([]byte(latenciesString))
-	if err != nil {
-		log.Panic(err)
-	}
+		_, err = file.Write([]byte(latenciesString))
+		if err != nil {
+			log.Panic(err)
+		}
 
-	if err = file.Close(); err != nil {
-		log.Panic(err)
-	}
+		if err = file.Close(); err != nil {
+			log.Panic(err)
+		}
 
-	log.Printf("Max cpu usage %v", maxCPU)
+		log.Printf("Max cpu usage %v", maxCPU)
 
-	var avgCPU float64 = 0
-	var avgMem float64 = 0
-	count := 0
-	for _, item := range detailMetricsMap {
-		if float64(item.CPU) >= float64(maxCPU)*0.8 {
-			avgCPU += float64(item.CPU)
-			avgMem += float64(item.Memory)
-			count += 1
+		var avgCPU float64 = 0
+		var avgMem float64 = 0
+		count := 0
+		for _, item := range detailMetricsMap {
+			if float64(item.CPU) >= float64(maxCPU)*0.8 {
+				avgCPU += float64(item.CPU)
+				avgMem += float64(item.Memory)
+				count += 1
+			}
+		}
+		avgCPU /= float64(count)
+		avgMem /= float64(count)
+
+		metricsMap[gpuLimit] = MetricsStat{
+			CPULimit:       "0",
+			GpuLimit:       strconv.Itoa(gpuLimit),
+			AvgLatency:     time.Duration(avgLatency) * time.Millisecond,
+			AvgCPUUsage:    avgCPU,
+			MaxCPUUsage:    maxCPU,
+			AvgMemoryUsage: avgMem,
+			MaxMemoryUsage: maxMem,
+			HighLoadRatio:  float64(len(detailMetricsMap)) / float64(count),
+			TaskNumber:     1,
+		}
+
+		var results []MetricsStat
+		for _, metrics := range metricsMap {
+			log.Printf("Node:%v, metrics data is %v",
+				"gpu1", metrics)
+			results = append(results, metrics)
+		}
+
+		file, err = os.Create(fmt.Sprintf("complete_task/fusion_result/%v_%v_%v.csv",
+			fusionNodeName, gpuLimit, cpuLimit))
+		if err != nil {
+			log.Panic(err)
+		}
+
+		_, err = file.Write([]byte(fusionResult))
+		if err != nil {
+			log.Panic(err)
+		}
+
+		if err = file.Close(); err != nil {
+			log.Panic(err)
+		}
+		return CompleteMetrics{
+			FusionNodeName: fusionNodeName,
+			GpuLimit:       gpuLimit,
+			CpuLimit:       cpuLimit,
+			AvgLatency:     avgLatency,
 		}
 	}
-	avgCPU /= float64(count)
-	avgMem /= float64(count)
 
-	metricsMap[gpuLimit] = MetricsStat{
-		CPULimit:       "0",
-		GpuLimit:       strconv.Itoa(gpuLimit),
-		AvgLatency:     time.Duration(avgLatency) * time.Millisecond,
-		AvgCPUUsage:    avgCPU,
-		MaxCPUUsage:    maxCPU,
-		AvgMemoryUsage: avgMem,
-		MaxMemoryUsage: maxMem,
-		HighLoadRatio:  float64(len(detailMetricsMap)) / float64(count),
-		TaskNumber:     1,
-	}
-
-	var results []MetricsStat
-	for _, metrics := range metricsMap {
-		log.Printf("Node:%v, metrics data is %v",
-			"gpu1", metrics)
-		results = append(results, metrics)
-	}
-
-	file, err = os.Create(fmt.Sprintf("complete_task/fusion_result/%v_%v_%v.csv",
-		fusionNodeName, gpuLimit, cpuLimit))
-	if err != nil {
-		log.Panic(err)
-	}
-
-	_, err = file.Write([]byte(fusionResult))
-	if err != nil {
-		log.Panic(err)
-	}
-
-	if err = file.Close(); err != nil {
-		log.Panic(err)
-	}
-
-	return CompleteMetrics{
-		FusionNodeName: fusionNodeName,
-		GpuLimit:       gpuLimit,
-		CpuLimit:       cpuLimit,
-		AvgLatency:     avgLatency,
-		MaxCpuUsage:    int(maxCPU),
-	}
+	return CompleteMetrics{}
 }
 
 func createGeneralWorkers(info *CreateInfo) {
