@@ -1,0 +1,3 @@
+fusion_node_name,gpu_limit,cpu_limit,avg_latency
+as1,25,2400,154.72844827586206
+as1,33,1400,142.41810344827587

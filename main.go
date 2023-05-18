@@ -132,11 +132,48 @@ func main() {
 
 	// warm up gpu, eliminate the diff of performance in cool and hot
 
-	for warmUpIter := 0; warmUpIter < 10; warmUpIter++ {
-		testCompleteTask("as1", 0, 0, false)
+	warmUp := func() {
+		for warmUpIter := 0; warmUpIter < 2; warmUpIter++ {
+			fmt.Printf("\r warm up %v/%v", warmUpIter+1, 2)
+			wg := sync.WaitGroup{}
+			wg.Add(3)
+			for i := 0; i < 3; i++ {
+				go func() {
+					testCompleteTask("as1", 0, 33, false)
+					wg.Done()
+				}()
+			}
+			wg.Wait()
+		}
+		fmt.Println()
 	}
 
+	warmUp()
 	restartScheduler()
+
+	enableTestDifferentTaskNumber := false
+
+	if enableTestDifferentTaskNumber {
+		wg := sync.WaitGroup{}
+		wg.Add(1)
+		go func() {
+			testCompleteTask("controller", 0, 50, false)
+			wg.Done()
+		}()
+		testCompleteTask("controller", 0, 50, true)
+		wg.Wait()
+
+		wg = sync.WaitGroup{}
+		wg.Add(2)
+		for i := 0; i < 2; i++ {
+			go func() {
+				testCompleteTask("controller", 0, 25, false)
+				wg.Done()
+			}()
+		}
+		testCompleteTask("controller", 0, 50, true)
+		wg.Wait()
+	}
 
 	createRange := func(lower int, upper int, step int) []int {
 		upper += step
@@ -157,14 +194,16 @@ func main() {
 	}
 
 	for _, fusionNodeName := range []string{"controller", "as1"} {
-		for _, gpuLimit := range []int{25, 33, 50, 100} {
+		for _, gpuLimit := range []int{33, 50, 100} {
 			for _, cpuLimit := range cpuLimits[fusionNodeName] {
+
 				log.Printf("for cpu[%v] gpu[%v] fusion node[%v]",
 					cpuLimit, gpuLimit, fusionNodeName)
 
+			startPoint:
 				wg := sync.WaitGroup{}
 				workerNumber := workerNumbers[gpuLimit]
-				wg.Add(workerNumber - 1)
+				wg.Add(workerNumber)
 				for i := 0; i < workerNumber-1; i++ {
 					go func() {
 						testCompleteTask(fusionNodeName, cpuLimit, gpuLimit, false)
@@ -172,10 +211,30 @@ func main() {
 					}()
 				}
 
-				metrics := testCompleteTask(fusionNodeName, cpuLimit, gpuLimit, true)
-				sumMetrics = append(sumMetrics, metrics)
+				go func() {
+					metrics := testCompleteTask(fusionNodeName, cpuLimit, gpuLimit, true)
+					sumMetrics = append(sumMetrics, metrics)
+					wg.Done()
+				}()
 
-				wg.Wait()
+				done := make(chan bool, 1)
+				go func() {
+					wg.Wait()
+					done <- true
+				}()
+
+				select {
+				case <-done:
+					log.Printf("Task Done")
+				case <-time.After(300 * time.Second):
+					close(done)
+					log.Printf("Timeout! Restart and Warm Up Again")
+					restartScheduler()
+					warmUp()
+					restartScheduler()
+					goto startPoint
+				}
+
 				time.Sleep(5 * time.Second)
 			}
 			restartScheduler()
@@ -228,6 +287,8 @@ func restartScheduler() {
 	}
 
 	fmt.Println(out.String())
+	log.Println("Restart Done!. Wait for 10 secs")
+	time.Sleep(10 * time.Second)
 }
 
 func testDET(nodeList []string, gpuLimits, taskNumbers []int) {
@@ -792,7 +853,7 @@ func testCompleteTask(fusionNodeName string, cpuLimit, gpuLimit int,
 			"gpu1": gpuLimit,
 		},
 		GpuMemory: map[string]int{
-			"gpu1": 3000,
+			"gpu1": 4000,
 		},
 	}
 	fusionWorkerCreateInfo := &CreateInfo{
