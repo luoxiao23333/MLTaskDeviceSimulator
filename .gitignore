@@ -1,4 +1,6 @@
 nohup.out
 fusion/data/
 */data/
+.kube/*
 .kube/
+.kube
