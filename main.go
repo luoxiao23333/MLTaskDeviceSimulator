@@ -27,7 +27,7 @@ const slamVideoName = "input.mp4"
 const fusionImageDir = "fusion/data/00/"
 const fusionImageName = "input.png"
 
-const detImageDir = "det/data/20/"
+const detImageDir = "det/data/00/"
 const detImageName = "input.png"
 
 const completTaskImageDir = "complete_task/data/00/"
@@ -118,35 +118,22 @@ func main() {
 		}
 	*/
 
-	/*
-		var nodeList = []string{"gpu1", "gpu1", "gpu1"}
-		var gpuLimits = []int{33, 50, 100}
-		var taskNumbers = []int{3, 2, 1}
-		testDET(nodeList, gpuLimits, taskNumbers)
-	*/
+	restartScheduler()
+	warmUp()
+	var nodeList = []string{"gpu1", "gpu1", "gpu1"}
+	var gpuLimits = []int{33, 50, 100}
+	var taskNumbers = []int{3, 2, 1}
+	testDET(nodeList, gpuLimits, taskNumbers)
 
+	//testCompleteTaskForAllConfig()
+
+}
+
+func testCompleteTaskForAllConfig() {
 	var sumMetrics []CompleteMetrics
 
 	restartScheduler()
 	time.Sleep(5 * time.Second)
-
-	// warm up gpu, eliminate the diff of performance in cool and hot
-
-	warmUp := func() {
-		for warmUpIter := 0; warmUpIter < 2; warmUpIter++ {
-			fmt.Printf("\r warm up %v/%v", warmUpIter+1, 2)
-			wg := sync.WaitGroup{}
-			wg.Add(3)
-			for i := 0; i < 3; i++ {
-				go func() {
-					testCompleteTask("as1", 0, 33, false)
-					wg.Done()
-				}()
-			}
-			wg.Wait()
-		}
-		fmt.Println()
-	}
 
 	warmUp()
 	restartScheduler()
@@ -255,6 +242,7 @@ func main() {
 			log.Panic(err)
 		}
 	}
+
 	/*
 		for _, fusionNodeName := range []string{"as1"} {
 			for cpuLimit := 5000; cpuLimit <= 5000; cpuLimit += 100 {
@@ -268,6 +256,37 @@ func main() {
 			}
 		}
 	*/
+}
+
+func warmUp() {
+	for warmUpIter := 0; warmUpIter < 2; warmUpIter++ {
+	warmUpPoint:
+		fmt.Printf("\r warm up %v/%v", warmUpIter+1, 2)
+		wg := sync.WaitGroup{}
+		wg.Add(3)
+		for i := 0; i < 3; i++ {
+			go func() {
+				testCompleteTask("as1", 0, 33, false)
+				wg.Done()
+			}()
+		}
+		done := make(chan bool, 1)
+		go func() {
+			wg.Wait()
+			done <- true
+		}()
+
+		select {
+		case <-done:
+			continue
+		case <-time.After(300 * time.Second):
+			close(done)
+			log.Printf("Timeout in warm up! Restart and Warm Up Again")
+			restartScheduler()
+			goto warmUpPoint
+		}
+	}
+	fmt.Println()
 }
 
 func restartScheduler() {
@@ -293,9 +312,7 @@ func restartScheduler() {
 
 func testDET(nodeList []string, gpuLimits, taskNumbers []int) {
 
-	nodeName := "gpu1"
-
-	const imageLength = 837
+	const imageLength = 465
 	var metricsMap = make(map[int]MetricsStat)
 
 	for index, nodeName := range nodeList {
@@ -354,8 +371,8 @@ func testDET(nodeList []string, gpuLimits, taskNumbers []int) {
 					if status == "Running" {
 						queryDuration := time.Since(queryTime)
 						if i == taskNumber-1 && queryDuration.Seconds() >= 2 {
-							usage := queryMetrics(taskIDs[i])
-							detailMetricsMap[usage.CollectedTime] = usage
+							//usage := queryMetrics(taskIDs[i])
+							//detailMetricsMap[usage.CollectedTime] = usage
 							queryTime = time.Now()
 						}
 					} else if status == "Last" {
