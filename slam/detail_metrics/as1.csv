@@ -1,0 +1,15 @@
+CPULimit,GPULimit,AvgLatency,AvgCPUUsage,MaxCPUUsage,AvgMemoryUsage,MaxMemoryUsage,HighLoadRatio,TaskNumber
+0,,259ms,NaN,0,NaN,0,NaN,3
+0,,177ms,NaN,0,NaN,0,NaN,3
+0,,131ms,NaN,0,NaN,0,NaN,3
+0,,107ms,NaN,0,NaN,0,NaN,3
+0,,88ms,NaN,0,NaN,0,NaN,3
+0,,72ms,NaN,0,NaN,0,NaN,3
+0,,67ms,NaN,0,NaN,0,NaN,3
+0,,58ms,NaN,0,NaN,0,NaN,3
+0,,53ms,NaN,0,NaN,0,NaN,3
+0,,52ms,NaN,0,NaN,0,NaN,3
+0,,44ms,NaN,0,NaN,0,NaN,3
+0,,45ms,NaN,0,NaN,0,NaN,3
+0,,57ms,NaN,0,NaN,0,NaN,3
+0,,41ms,NaN,0,NaN,0,NaN,3

@@ -30,6 +30,9 @@ const fusionImageName = "input.png"
 const detImageDir = "det/data/00/"
 const detImageName = "input.png"
 
+const slamImageDir = "slam/data/00/"
+const slamImageName = "input.png"
+
 const completTaskImageDir = "complete_task/data/00/"
 const complteTaskImageName = "input.png"
 
@@ -43,6 +46,7 @@ const receivePort = ":8080"
 var fusionLockMap sync.Map
 var detLockMap sync.Map
 var completTaskLoackMap sync.Map
+var slamTaskLockMap sync.Map
 
 type MetricsStat struct {
 	CPULimit       string        `csv:"CPULimit"`
@@ -118,15 +122,41 @@ func main() {
 		}
 	*/
 
-	restartScheduler()
-	warmUp()
-	var nodeList = []string{"gpu1", "gpu1", "gpu1"}
-	var gpuLimits = []int{33, 50, 100}
-	var taskNumbers = []int{3, 2, 1}
-	testDET(nodeList, gpuLimits, taskNumbers)
+	// test SLAM
+	/*
+		restartScheduler()
 
-	//testCompleteTaskForAllConfig()
+		controllerRange := createRange(1000, 5000, 200)
+		nodeList := []string{}
+		taskNumber := []int{}
+		for range controllerRange {
+			nodeList = append(nodeList, "controller")
+			expectedTask := 3
+			taskNumber = append(taskNumber, expectedTask)
+		}
+		testSLAM(nodeList, controllerRange, taskNumber)
+		as1Range := createRange(400, 3000, 200)
+		nodeList = []string{}
+		taskNumber = []int{}
+		for range as1Range {
+			nodeList = append(nodeList, "as1")
+			expectedTask := 3
+			taskNumber = append(taskNumber, expectedTask)
+		}
+		testSLAM(nodeList, as1Range, taskNumber)
+	*/
 
+	// Tesk Det
+	/*
+		restartScheduler()
+		warmUp()
+		var nodeList = []string{"gpu1", "gpu1", "gpu1"}
+		var gpuLimits = []int{33, 50, 100}
+		var taskNumbers = []int{3, 2, 1}
+		testDET(nodeList, gpuLimits, taskNumbers)
+	*/
+
+	testCompleteTaskForAllConfig()
 }
 
 func testCompleteTaskForAllConfig() {
@@ -162,15 +192,6 @@ func testCompleteTaskForAllConfig() {
 		wg.Wait()
 	}
 
-	createRange := func(lower int, upper int, step int) []int {
-		upper += step
-		nums := make([]int, (upper-lower)/step)
-		for i := range nums {
-			nums[i] = lower + step*i
-		}
-		return nums
-	}
-
 	cpuLimits := map[string][]int{
 		"controller": createRange(1000, 5000, 200),
 		"as1":        createRange(400, 3000, 200),
@@ -180,7 +201,7 @@ func testCompleteTaskForAllConfig() {
 		25: 4, 33: 3, 50: 2, 100: 1,
 	}
 
-	for _, fusionNodeName := range []string{"controller", "as1"} {
+	for _, fusionNodeName := range []string{"controller"} {
 		for _, gpuLimit := range []int{33, 50, 100} {
 			for _, cpuLimit := range cpuLimits[fusionNodeName] {
 
@@ -258,6 +279,15 @@ func testCompleteTaskForAllConfig() {
 	*/
 }
 
+func createRange(lower int, upper int, step int) []int {
+	upper += step
+	nums := make([]int, (upper-lower)/step)
+	for i := range nums {
+		nums[i] = lower + step*i
+	}
+	return nums
+}
+
 func warmUp() {
 	for warmUpIter := 0; warmUpIter < 2; warmUpIter++ {
 	warmUpPoint:
@@ -266,7 +296,7 @@ func warmUp() {
 		wg.Add(3)
 		for i := 0; i < 3; i++ {
 			go func() {
-				testCompleteTask("as1", 0, 33, false)
+				testCompleteTask("controller", 0, 33, false)
 				wg.Done()
 			}()
 		}
@@ -312,6 +342,8 @@ func restartScheduler() {
 
 func testDET(nodeList []string, gpuLimits, taskNumbers []int) {
 
+	nodeName := "gpu1"
+
 	const imageLength = 465
 	var metricsMap = make(map[int]MetricsStat)
 
@@ -321,7 +353,7 @@ func testDET(nodeList []string, gpuLimits, taskNumbers []int) {
 		detailMetricsMap := make(map[string]*ResourceUsage)
 		log.Printf("creating pod... wait for det start up\n")
 		createGPUWorkers(gpuLimit, nodeName, taskNumber, "det")
-		waitTime := int(time.Second) * 60
+		waitTime := int(time.Second) * 15
 		log.Printf("Wait for extra %v", time.Duration(waitTime))
 		time.Sleep(time.Duration(waitTime))
 		taskWG := sync.WaitGroup{}
@@ -331,27 +363,33 @@ func testDET(nodeList []string, gpuLimits, taskNumbers []int) {
 			taskIDs[i] = "-1"
 		}
 		var latencies []time.Duration
+		var detResult string
 		for i := 0; i < taskNumber; i++ {
 			go func(i int) {
 				startTime := time.Now()
 				queryTime := time.Now()
 				eachFrameTime := time.Now()
 				for imageIndex := 0; imageIndex < imageLength; imageIndex++ {
+					if i == taskNumber-1 {
+						fmt.Printf("\rDoing Image %v/%v", imageIndex+1, imageLength)
+					}
 					var status string
 					if taskIDs[i] == "-1" {
 						status = "Begin"
 					} else if imageIndex == imageLength-1 {
 						status = "Last"
 						notifier, _ := detLockMap.Load(taskIDs[i])
-						<-notifier.(chan bool)
+						result := <-notifier.(chan string)
 						if i == taskNumber-1 {
+							detResult = detResult + result
 							latencies = append(latencies, time.Since(eachFrameTime))
 						}
 					} else {
 						status = "Running"
-						notifier, _ := detLockMap.LoadOrStore(taskIDs[i], make(chan bool))
-						<-notifier.(chan bool)
+						notifier, _ := detLockMap.LoadOrStore(taskIDs[i], make(chan string))
+						result := <-notifier.(chan string)
 						if i == taskNumber-1 {
+							detResult = detResult + result
 							latencies = append(latencies, time.Since(eachFrameTime))
 						}
 					}
@@ -377,7 +415,10 @@ func testDET(nodeList []string, gpuLimits, taskNumbers []int) {
 						}
 					} else if status == "Last" {
 						notifier, _ := detLockMap.Load(taskIDs[i])
-						<-notifier.(chan bool)
+						result := <-notifier.(chan string)
+						if i == taskNumber-1 {
+							detResult = detResult + result
+						}
 						detLockMap.Delete(taskIDs[i])
 					}
 
@@ -407,7 +448,22 @@ func testDET(nodeList []string, gpuLimits, taskNumbers []int) {
 			detailResults = append(detailResults, *item)
 		}
 
-		file, err := os.Create(fmt.Sprintf("det/detail_metrics/%v_%v_%v.csv",
+		file, err := os.Create(fmt.Sprintf("det/result/%v_%v.csv",
+			nodeName, gpuLimit))
+		if err != nil {
+			log.Panic(err)
+		}
+
+		_, err = file.Write([]byte(detResult))
+		if err != nil {
+			log.Panic(err)
+		}
+
+		if err = file.Close(); err != nil {
+			log.Panic(err)
+		}
+
+		file, err = os.Create(fmt.Sprintf("det/detail_metrics/%v_%v_%v.csv",
 			"det", nodeName, gpuLimit))
 		if err != nil {
 			log.Panic(err)
@@ -510,7 +566,7 @@ func testFusion(nodeList []string, coreMap map[string]float64) {
 				taskNumber := int(math.Floor((cores * 1000 * 0.8) / float64(cpuLimit)))
 				taskNumber = 1
 				log.Printf("creating pod... wait for SLAM start up\n")
-				createWorkers(cpuLimit, int(cores), nodeName, taskNumber, "fusion")
+				createWorkers(cpuLimit, nodeName, taskNumber, "fusion")
 				waitTime := taskNumber * int(time.Second) * 60
 				log.Printf("Wait for extra %v", time.Duration(waitTime))
 				time.Sleep(time.Duration(waitTime))
@@ -672,6 +728,201 @@ func testFusion(nodeList []string, coreMap map[string]float64) {
 	nodeWG.Wait()
 }
 
+func testSLAM(nodeList []string, cpuLimits, taskNumbers []int) {
+	const imageLength = 465
+	var metricsResult []MetricsStat
+
+	for index, nodeName := range nodeList {
+		cpuLimit := cpuLimits[index]
+		taskNumber := taskNumbers[index]
+		detailMetricsMap := make(map[string]*ResourceUsage)
+		log.Printf("creating pod... wait for slam start up\n")
+		createWorkers(cpuLimit, nodeName, taskNumber, "slam")
+		waitTime := int(time.Second) * 10
+		log.Printf("Wait for extra %v", time.Duration(waitTime))
+		time.Sleep(time.Duration(waitTime))
+		taskWG := sync.WaitGroup{}
+		taskWG.Add(taskNumber)
+		taskIDs := make([]string, taskNumber)
+		slamResult := ""
+		for i := range taskIDs {
+			taskIDs[i] = "-1"
+		}
+		var latencies []time.Duration
+		for i := 0; i < taskNumber; i++ {
+			go func(i int) {
+				startTime := time.Now()
+				queryTime := time.Now()
+				eachFrameTime := time.Now()
+				for imageIndex := 0; imageIndex < imageLength; imageIndex++ {
+					if i == taskNumber-1 {
+						fmt.Printf("\r Doing Image %v/%v", imageIndex+1, imageLength)
+					}
+					var status string
+					if taskIDs[i] == "-1" {
+						status = "Begin"
+					} else if imageIndex == imageLength-1 {
+						status = "Last"
+						notifier, _ := slamTaskLockMap.Load(taskIDs[i])
+						result := <-notifier.(chan string)
+						slamResult = slamResult + result
+						if i == taskNumber-1 {
+							latencies = append(latencies, time.Since(eachFrameTime))
+						}
+					} else {
+						status = "Running"
+						notifier, _ := slamTaskLockMap.LoadOrStore(taskIDs[i], make(chan string))
+						result := <-notifier.(chan string)
+						slamResult = slamResult + result
+						if i == taskNumber-1 {
+							latencies = append(latencies, time.Since(eachFrameTime))
+						}
+					}
+
+					duration := time.Since(startTime)
+					needToWait := time.Duration(int64(float64(imageIndex)*(1000./30.))) * time.Millisecond
+					if duration < needToWait {
+						diff := needToWait - duration
+						log.Printf("Wait %v", time.Duration(diff))
+						time.Sleep(time.Duration(diff))
+					}
+
+					imagePath := slamImageDir + utils.IntToNDigitsString(imageIndex, 6) + ".png"
+					taskIDs[i] = sendSlamRequest(nodeName, imagePath, status, taskIDs[i])
+					eachFrameTime = time.Now()
+
+					if status == "Running" {
+						queryDuration := time.Since(queryTime)
+						if i == taskNumber-1 && queryDuration.Seconds() >= 2 {
+							//usage := queryMetrics(taskIDs[i])
+							//detailMetricsMap[usage.CollectedTime] = usage
+							queryTime = time.Now()
+						}
+					} else if status == "Last" {
+						notifier, _ := slamTaskLockMap.Load(taskIDs[i])
+						result := <-notifier.(chan string)
+						slamResult = slamResult + result
+						slamTaskLockMap.Delete(taskIDs[i])
+					}
+
+				}
+				taskWG.Done()
+			}(i)
+		}
+		taskWG.Wait()
+
+		avgLatency := 0.
+		for _, l := range latencies {
+			avgLatency += float64(l.Milliseconds())
+		}
+		avgLatency = avgLatency / float64(len(latencies))
+
+		log.Printf("Avg latency is %v ms for cpu limits: %v", avgLatency, cpuLimit)
+		var maxCPU int64 = 0
+		var maxMem int64 = 0
+		var detailResults []ResourceUsage
+		for _, item := range detailMetricsMap {
+			if item.CPU > maxCPU {
+				maxCPU = item.CPU
+			}
+			if item.Memory > maxMem {
+				maxMem = item.Memory
+			}
+			detailResults = append(detailResults, *item)
+		}
+
+		file, err := os.Create(fmt.Sprintf("slam/detail_metrics/%v_%v_%v.csv",
+			"slam", nodeName, cpuLimit))
+		if err != nil {
+			log.Panic(err)
+		}
+
+		_, err = file.Write(utils.MarshalCSV(detailResults))
+		if err != nil {
+			log.Panic(err)
+		}
+
+		if err = file.Close(); err != nil {
+			log.Panic(err)
+		}
+
+		file, err = os.Create(fmt.Sprintf("slam/detail_metrics/latencies_%v_%v_%v.csv",
+			"slam", nodeName, cpuLimit))
+		if err != nil {
+			log.Panic(err)
+		}
+
+		var latenciesString string
+		for _, latency := range latencies {
+			latenciesString = latenciesString + fmt.Sprintf("%v\n", latency.Milliseconds())
+		}
+
+		_, err = file.Write([]byte(latenciesString))
+		if err != nil {
+			log.Panic(err)
+		}
+
+		if err = file.Close(); err != nil {
+			log.Panic(err)
+		}
+
+		log.Printf("Max cpu usage %v", maxCPU)
+
+		file, err = os.Create(fmt.Sprintf("slam/result/%v_%v.csv",
+			nodeName, cpuLimit))
+		if err != nil {
+			log.Panic(err)
+		}
+
+		file.Write([]byte(slamResult))
+		if err = file.Close(); err != nil {
+			log.Panic(err)
+		}
+
+		var avgCPU float64 = 0
+		var avgMem float64 = 0
+		count := 0
+		for _, item := range detailMetricsMap {
+			if float64(item.CPU) >= float64(maxCPU)*0.8 {
+				avgCPU += float64(item.CPU)
+				avgMem += float64(item.Memory)
+				count += 1
+			}
+		}
+		avgCPU /= float64(count)
+		avgMem /= float64(count)
+
+		metricsResult = append(metricsResult, MetricsStat{
+			CPULimit:       "0",
+			AvgLatency:     time.Duration(avgLatency) * time.Millisecond,
+			AvgCPUUsage:    avgCPU,
+			MaxCPUUsage:    maxCPU,
+			AvgMemoryUsage: avgMem,
+			MaxMemoryUsage: maxMem,
+			HighLoadRatio:  float64(len(detailMetricsMap)) / float64(count),
+			TaskNumber:     taskNumber,
+		})
+
+		file, err = os.Create("slam/detail_metrics/" + nodeName + ".csv")
+		if err != nil {
+			panic(err)
+		}
+		defer func(file *os.File) {
+			err = file.Close()
+			if err != nil {
+				log.Panic(err)
+			}
+		}(file)
+
+		marshalData := utils.MarshalCSV(metricsResult)
+
+		_, err = file.Write(marshalData)
+		if err != nil {
+			log.Panic(err)
+		}
+	}
+}
+
 func testSingleVideo(nodeList []string, coreMap map[string]float64) {
 	waitGroup.Add(2)
 
@@ -697,7 +948,7 @@ func testSingleVideo(nodeList []string, coreMap map[string]float64) {
 				wg.Add(taskNumber)
 				for i := 0; i < taskNumber; i++ {
 					go func() {
-						slamID = sendSlamRequest(cpuLimit, nodeName)
+						//slamID = sendSlamRequest(cpuLimit, nodeName)
 						lock.Lock()
 						slamIDs = append(slamIDs, slamID)
 						lock.Unlock()
@@ -854,6 +1105,15 @@ type CompleteMetrics struct {
 	AvgLatency     float64 `csv:"avg_latency"`
 }
 
+type LatencyMetrics struct {
+	result             string
+	slamIOLatency      time.Duration
+	slamComputeLatency time.Duration
+	detIOLatency       time.Duration
+	detComputeLatency  time.Duration
+	totalLatency       time.Duration
+}
+
 func testCompleteTask(fusionNodeName string, cpuLimit, gpuLimit int,
 	writeResult bool) CompleteMetrics {
 	fusionResult := ""
@@ -914,33 +1174,35 @@ func testCompleteTask(fusionNodeName string, cpuLimit, gpuLimit int,
 	}
 	time.Sleep(time.Duration(waitTime))
 
-	var latencies []time.Duration
+	var latencies []LatencyMetrics
 	queryTime := time.Now()
 	eachFrameTime := time.Now()
 	for imageIndex := 0; imageIndex < imageLength; imageIndex++ {
 		if writeResult {
-			fmt.Printf("\rDoing image %v/%v", imageIndex, imageLength)
+			fmt.Printf("\rDoing image %v/%v", imageIndex+1, imageLength)
 		}
 		os.Stdin.Sync()
 		if taskInfo.FusionTaskID == "-1" {
 			taskInfo.Status = "Begin"
 		} else if imageIndex == imageLength-1 {
 			taskInfo.Status = "Last"
-			notifier, _ := completTaskLoackMap.LoadOrStore(taskInfo.FusionTaskID, make(chan bool))
-			result := <-notifier.(chan string)
-			fusionResult = fusionResult + result
-			latencies = append(latencies, time.Since(eachFrameTime))
+			notifier, _ := completTaskLoackMap.Load(taskInfo.FusionTaskID)
+			latencyMetrics := <-notifier.(chan LatencyMetrics)
+			fusionResult = fusionResult + latencyMetrics.result
+			latencyMetrics.totalLatency = time.Since(eachFrameTime)
+			latencies = append(latencies, latencyMetrics)
 		} else {
 			taskInfo.Status = "Running"
-			notifier, _ := completTaskLoackMap.LoadOrStore(taskInfo.FusionTaskID, make(chan string))
-			result := <-notifier.(chan string)
-			fusionResult = fusionResult + result
-			latencies = append(latencies, time.Since(eachFrameTime))
+			notifier, _ := completTaskLoackMap.LoadOrStore(taskInfo.FusionTaskID, make(chan LatencyMetrics, 1))
+			latencyMetrics := <-notifier.(chan LatencyMetrics)
+			fusionResult = fusionResult + latencyMetrics.result
+			latencyMetrics.totalLatency = time.Since(eachFrameTime)
+			latencies = append(latencies, latencyMetrics)
 		}
 
-		eachFrameTime = time.Now()
 		imagePath := completTaskImageDir + utils.IntToNDigitsString(imageIndex, 6) + ".png"
 		detTaskID, fusionTaskID := sendCompletTaskRequest(*taskInfo, imagePath)
+		eachFrameTime = time.Now()
 
 		if taskInfo.Status == "Begin" {
 			taskInfo.DETTaskID = detTaskID
@@ -958,8 +1220,8 @@ func testCompleteTask(fusionNodeName string, cpuLimit, gpuLimit int,
 			}
 		} else if taskInfo.Status == "Last" {
 			notifier, _ := completTaskLoackMap.Load(taskInfo.FusionTaskID)
-			result := <-notifier.(chan string)
-			fusionResult = fusionResult + result
+			latencyMetrics := <-notifier.(chan LatencyMetrics)
+			fusionResult = fusionResult + latencyMetrics.result
 			completTaskLoackMap.Delete(taskInfo.FusionTaskID)
 		}
 
@@ -969,7 +1231,7 @@ func testCompleteTask(fusionNodeName string, cpuLimit, gpuLimit int,
 
 		avgLatency := 0.
 		for _, l := range latencies {
-			avgLatency += float64(l.Milliseconds())
+			avgLatency += float64(l.totalLatency.Milliseconds())
 		}
 		avgLatency = avgLatency / float64(len(latencies))
 
@@ -1010,7 +1272,13 @@ func testCompleteTask(fusionNodeName string, cpuLimit, gpuLimit int,
 
 		var latenciesString string
 		for _, latency := range latencies {
-			latenciesString = latenciesString + fmt.Sprintf("%v\n", latency.Milliseconds())
+			latenciesString = latenciesString +
+				fmt.Sprintf("%v %v %v %v %v\n",
+					latency.totalLatency.Milliseconds(),
+					latency.slamIOLatency.Milliseconds(),
+					latency.slamComputeLatency.Milliseconds(),
+					latency.detIOLatency.Milliseconds(),
+					latency.detComputeLatency.Milliseconds())
 		}
 
 		_, err = file.Write([]byte(latenciesString))
@@ -1110,7 +1378,7 @@ func createGPUWorkers(gpu int, nodeName string, taskNumber int, taskName string)
 			nodeName: gpu,
 		},
 		GpuMemory: map[string]int{
-			nodeName: 2400,
+			nodeName: 3000,
 		},
 	}
 
@@ -1129,7 +1397,7 @@ func createGPUWorkers(gpu int, nodeName string, taskNumber int, taskName string)
 	}
 }
 
-func createWorkers(cpu, cores int, nodeName string, taskNumber int, taskName string) {
+func createWorkers(cpu int, nodeName string, taskNumber int, taskName string) {
 	info := CreateInfo{
 		CpuLimits: map[string]int{
 			nodeName: cpu,
@@ -1139,6 +1407,9 @@ func createWorkers(cpu, cores int, nodeName string, taskNumber int, taskName str
 		},
 		TaskName: taskName,
 		GpuLimits: map[string]int{
+			nodeName: 0,
+		},
+		GpuMemory: map[string]int{
 			nodeName: 0,
 		},
 	}
@@ -1236,12 +1507,14 @@ func detFinished(w http.ResponseWriter, r *http.Request) {
 
 	taskID := form.Value["task_id"][0]
 
-	notifier, ok := detLockMap.LoadOrStore(taskID, make(chan bool, 1))
+	notifier, ok := detLockMap.LoadOrStore(taskID, make(chan string, 1))
 	if !ok {
 		log.Panic("Not Load chan")
 	}
 
-	notifier.(chan bool) <- true
+	detResult := form.Value["det_result"][0]
+
+	notifier.(chan string) <- detResult
 
 	//log.Printf("Task id %v, result:\n%v", taskID, result)
 
@@ -1271,7 +1544,23 @@ func complteTaskFinish(w http.ResponseWriter, r *http.Request) {
 		log.Panic("Not Load chan")
 	}
 
-	notifier.(chan string) <- fusionResult
+	getLatency := func(name string) time.Duration {
+		latency, err := time.ParseDuration(form.Value[name][0])
+		if err != nil {
+			log.Panic(err)
+		}
+		return latency
+	}
+
+	metrics := LatencyMetrics{
+		result:             fusionResult,
+		slamIOLatency:      getLatency("slam_io_latency"),
+		slamComputeLatency: getLatency("slam_compute_latency"),
+		detIOLatency:       getLatency("det_io_latency"),
+		detComputeLatency:  getLatency("det_compute_latency"),
+	}
+
+	notifier.(chan LatencyMetrics) <- metrics
 
 	//log.Printf("Task id %v, result:\n%v", taskID, result)
 
@@ -1287,15 +1576,22 @@ func slamFinished(w http.ResponseWriter, r *http.Request) {
 		log.Panic(err)
 	}
 
-	_, err = multipartReader.ReadForm(1024 * 1024 * 100)
+	form, err := multipartReader.ReadForm(1024 * 1024 * 2)
 	if err != nil {
 		log.Panic(err)
 	}
 
-	log.Println("Task completed!")
-	//saveFile("key_frames", "slam/KeyFrameTrajectory.txt", form)
+	taskID := form.Value["task_id"][0]
 
-	//log.Println(form.Value["container_output"][0])
+	notifier, ok := slamTaskLockMap.LoadOrStore(taskID, make(chan string, 1))
+	if !ok {
+		log.Panic("Not Load chan")
+	}
+
+	result := form.Value["slam_result"][0]
+	notifier.(chan string) <- result
+
+	//log.Printf("Task id %v, result:\n%v", taskID, result)
 
 	_, err = w.Write([]byte("OK"))
 	if err != nil {
@@ -1383,8 +1679,9 @@ func sendODRequest() {
 
 }
 
-func sendSlamRequest(cpuLimit, nodeName string) string {
-	body := &bytes.Buffer{}
+func sendSlamRequest(nodeName, imagePath, status, taskID string) string {
+	bufferElem := utils.GetBuffer()
+	body := bufferElem.Buffer
 	multipartWriter := multipart.NewWriter(body)
 
 	writeValue := func(key, value string) {
@@ -1417,10 +1714,14 @@ func sendSlamRequest(cpuLimit, nodeName string) string {
 	}
 
 	writeValue("task_name", "slam")
-	writeValue("cpu_limit", cpuLimit)
 	writeValue("node_name", nodeName)
+	writeValue("status", status)
+	writeValue("task_id", taskID)
+	if status == "Last" {
+		writeValue("delete", "True")
+	}
 
-	writeFile("video", slamVideoPath, slamVideoName)
+	writeFile("frame", imagePath, fusionImageName)
 
 	err := multipartWriter.Close()
 	if err != nil {
@@ -1432,12 +1733,16 @@ func sendSlamRequest(cpuLimit, nodeName string) string {
 		log.Panic(err)
 	}
 
+	utils.ReturnBuffer(bufferElem)
+
 	content, err := io.ReadAll(postResp.Body)
 	if err != nil {
 		log.Panic(err)
 	}
 
-	log.Println(string(content))
+	postResp.Body.Close()
+
+	//log.Println(string(content))
 
 	return string(content)
 
@@ -1619,6 +1924,7 @@ func sendCompletTaskRequest(taskInfo CompleteTaskInfo, imagePath string) (string
 	if taskInfo.Status == "Last" {
 		taskInfo.DeleteDETWorker = true
 		taskInfo.DeleteFusionWorker = true
+		log.Printf("Task id %v, will delete", taskInfo.FusionTaskID)
 	}
 
 	jsonByte, err := json.Marshal(taskInfo)
