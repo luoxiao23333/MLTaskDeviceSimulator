@@ -121,3 +121,5 @@ func IntToNDigitsString(n int, digits int) string {
 	}
 	return s
 }
+
+func ExecuteWithTimeout() {}

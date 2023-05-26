@@ -3,7 +3,9 @@ package main
 import (
 	"Device/utils"
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -84,7 +86,7 @@ func (r *router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		detFinished(w, req)
 	case "/complete_task":
 		complteTaskFinish(w, req)
-	// 其他路由处理函数
+	// other router func
 	default:
 		http.NotFound(w, req)
 	}
@@ -174,34 +176,34 @@ func testCompleteTaskForAllConfig() {
 		wg := sync.WaitGroup{}
 		wg.Add(1)
 		go func() {
-			testCompleteTask("controller", 0, 50, false)
+			testCompleteTask("controller", 0, 50, false, context.Background())
 			wg.Done()
 		}()
-		testCompleteTask("controller", 0, 50, true)
+		testCompleteTask("controller", 0, 50, true, context.Background())
 		wg.Wait()
 
 		wg = sync.WaitGroup{}
 		wg.Add(2)
 		for i := 0; i < 2; i++ {
 			go func() {
-				testCompleteTask("controller", 0, 25, false)
+				testCompleteTask("controller", 0, 25, false, context.Background())
 				wg.Done()
 			}()
 		}
-		testCompleteTask("controller", 0, 50, true)
+		testCompleteTask("controller", 0, 50, true, context.Background())
 		wg.Wait()
 	}
 
 	cpuLimits := map[string][]int{
-		"controller": createRange(1000, 5000, 200),
-		"as1":        createRange(400, 3000, 200),
+		"controller": createRange(1000, 6000, 200),
+		"as1":        createRange(400, 3000, 100),
 	}
 
 	workerNumbers := map[int]int{
 		25: 4, 33: 3, 50: 2, 100: 1,
 	}
 
-	for _, fusionNodeName := range []string{"controller"} {
+	for _, fusionNodeName := range []string{"as1", "controller"} {
 		for _, gpuLimit := range []int{33, 50, 100} {
 			for _, cpuLimit := range cpuLimits[fusionNodeName] {
 
@@ -209,23 +211,25 @@ func testCompleteTaskForAllConfig() {
 					cpuLimit, gpuLimit, fusionNodeName)
 
 			startPoint:
+				done := make(chan bool)
+				ctx, cancel := context.WithCancel(context.Background())
+
 				wg := sync.WaitGroup{}
 				workerNumber := workerNumbers[gpuLimit]
 				wg.Add(workerNumber)
 				for i := 0; i < workerNumber-1; i++ {
-					go func() {
-						testCompleteTask(fusionNodeName, cpuLimit, gpuLimit, false)
+					go func(ctx context.Context) {
+						testCompleteTask(fusionNodeName, cpuLimit, gpuLimit, false, ctx)
 						wg.Done()
-					}()
+					}(ctx)
 				}
 
-				go func() {
-					metrics := testCompleteTask(fusionNodeName, cpuLimit, gpuLimit, true)
+				go func(ctx context.Context) {
+					metrics := testCompleteTask(fusionNodeName, cpuLimit, gpuLimit, true, ctx)
 					sumMetrics = append(sumMetrics, metrics)
 					wg.Done()
-				}()
+				}(ctx)
 
-				done := make(chan bool, 1)
 				go func() {
 					wg.Wait()
 					done <- true
@@ -233,10 +237,10 @@ func testCompleteTaskForAllConfig() {
 
 				select {
 				case <-done:
-					log.Printf("Task Done")
+					log.Println("Task Done")
 				case <-time.After(300 * time.Second):
-					close(done)
 					log.Printf("Timeout! Restart and Warm Up Again")
+					cancel()
 					restartScheduler()
 					warmUp()
 					restartScheduler()
@@ -294,11 +298,12 @@ func warmUp() {
 		fmt.Printf("\r warm up %v/%v", warmUpIter+1, 2)
 		wg := sync.WaitGroup{}
 		wg.Add(3)
+		ctx, cancel := context.WithCancel(context.Background())
 		for i := 0; i < 3; i++ {
-			go func() {
-				testCompleteTask("controller", 0, 33, false)
+			go func(ctx context.Context) {
+				testCompleteTask("controller", 0, 33, false, ctx)
 				wg.Done()
-			}()
+			}(ctx)
 		}
 		done := make(chan bool, 1)
 		go func() {
@@ -310,7 +315,7 @@ func warmUp() {
 		case <-done:
 			continue
 		case <-time.After(300 * time.Second):
-			close(done)
+			cancel()
 			log.Printf("Timeout in warm up! Restart and Warm Up Again")
 			restartScheduler()
 			goto warmUpPoint
@@ -322,11 +327,10 @@ func warmUp() {
 func restartScheduler() {
 	cmd := exec.Command("kubectl", "delete", "pod", "--all")
 
-	// 设置环境变量
+	// set env
 	env := []string{"KUBECONFIG=/etc/kubernetes/admin.conf"}
 	cmd.Env = append(cmd.Env, env...)
 
-	// 执行命令
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	err := cmd.Run()
@@ -337,6 +341,7 @@ func restartScheduler() {
 
 	fmt.Println(out.String())
 	log.Println("Restart Done!. Wait for 10 secs")
+	completTaskLoackMap = sync.Map{}
 	time.Sleep(10 * time.Second)
 }
 
@@ -1111,11 +1116,12 @@ type LatencyMetrics struct {
 	slamComputeLatency time.Duration
 	detIOLatency       time.Duration
 	detComputeLatency  time.Duration
+	fusionLatency      time.Duration
 	totalLatency       time.Duration
 }
 
 func testCompleteTask(fusionNodeName string, cpuLimit, gpuLimit int,
-	writeResult bool) CompleteMetrics {
+	writeResult bool, ctx context.Context) CompleteMetrics {
 	fusionResult := ""
 
 	detWorkerCreateInfo := &CreateInfo{
@@ -1176,8 +1182,15 @@ func testCompleteTask(fusionNodeName string, cpuLimit, gpuLimit int,
 
 	var latencies []LatencyMetrics
 	queryTime := time.Now()
-	eachFrameTime := time.Now()
 	for imageIndex := 0; imageIndex < imageLength; imageIndex++ {
+
+		select {
+		case <-ctx.Done():
+			return CompleteMetrics{}
+		default:
+			// pass
+		}
+
 		if writeResult {
 			fmt.Printf("\rDoing image %v/%v", imageIndex+1, imageLength)
 		}
@@ -1189,20 +1202,17 @@ func testCompleteTask(fusionNodeName string, cpuLimit, gpuLimit int,
 			notifier, _ := completTaskLoackMap.Load(taskInfo.FusionTaskID)
 			latencyMetrics := <-notifier.(chan LatencyMetrics)
 			fusionResult = fusionResult + latencyMetrics.result
-			latencyMetrics.totalLatency = time.Since(eachFrameTime)
 			latencies = append(latencies, latencyMetrics)
 		} else {
 			taskInfo.Status = "Running"
 			notifier, _ := completTaskLoackMap.LoadOrStore(taskInfo.FusionTaskID, make(chan LatencyMetrics, 1))
 			latencyMetrics := <-notifier.(chan LatencyMetrics)
 			fusionResult = fusionResult + latencyMetrics.result
-			latencyMetrics.totalLatency = time.Since(eachFrameTime)
 			latencies = append(latencies, latencyMetrics)
 		}
 
 		imagePath := completTaskImageDir + utils.IntToNDigitsString(imageIndex, 6) + ".png"
-		detTaskID, fusionTaskID := sendCompletTaskRequest(*taskInfo, imagePath)
-		eachFrameTime = time.Now()
+		detTaskID, fusionTaskID := sendCompletTaskRequest(*taskInfo, imagePath, ctx)
 
 		if taskInfo.Status == "Begin" {
 			taskInfo.DETTaskID = detTaskID
@@ -1273,12 +1283,13 @@ func testCompleteTask(fusionNodeName string, cpuLimit, gpuLimit int,
 		var latenciesString string
 		for _, latency := range latencies {
 			latenciesString = latenciesString +
-				fmt.Sprintf("%v %v %v %v %v\n",
+				fmt.Sprintf("%v %v %v %v %v %v\n",
 					latency.totalLatency.Milliseconds(),
 					latency.slamIOLatency.Milliseconds(),
 					latency.slamComputeLatency.Milliseconds(),
 					latency.detIOLatency.Milliseconds(),
-					latency.detComputeLatency.Milliseconds())
+					latency.detComputeLatency.Milliseconds(),
+					latency.fusionLatency.Microseconds())
 		}
 
 		_, err = file.Write([]byte(latenciesString))
@@ -1558,6 +1569,8 @@ func complteTaskFinish(w http.ResponseWriter, r *http.Request) {
 		slamComputeLatency: getLatency("slam_compute_latency"),
 		detIOLatency:       getLatency("det_io_latency"),
 		detComputeLatency:  getLatency("det_compute_latency"),
+		fusionLatency:      getLatency("fusion_latency"),
+		totalLatency:       getLatency("total_latency"),
 	}
 
 	notifier.(chan LatencyMetrics) <- metrics
@@ -1887,7 +1900,7 @@ func sendDETRequest(nodeName, imagePath, status, taskID string) string {
 
 }
 
-func sendCompletTaskRequest(taskInfo CompleteTaskInfo, imagePath string) (string, string) {
+func sendCompletTaskRequest(taskInfo CompleteTaskInfo, imagePath string, ctx context.Context) (string, string) {
 	bufferElem := utils.GetBuffer()
 	body := bufferElem.Buffer
 	multipartWriter := multipart.NewWriter(body)
@@ -1941,8 +1954,25 @@ func sendCompletTaskRequest(taskInfo CompleteTaskInfo, imagePath string) (string
 		log.Panic(err)
 	}
 
-	postResp, err := http.Post(completeTaskURL, multipartWriter.FormDataContentType(), body)
+	/*
+		postResp, err := http.Post(completeTaskURL, multipartWriter.FormDataContentType(), body)
+		if err != nil {
+			log.Panic(err)
+		}*/
+
+	req, err := http.NewRequestWithContext(ctx, "POST", completeTaskURL, body)
 	if err != nil {
+		log.Panic(err)
+	}
+	req.Header.Set("Content-Type", multipartWriter.FormDataContentType())
+	client := &http.Client{}
+	postResp, err := client.Do(req)
+
+	if errors.Is(err, context.Canceled) {
+		log.Println("http cancelled")
+		utils.ReturnBuffer(bufferElem)
+		return "", ""
+	} else if err != nil {
 		log.Panic(err)
 	}
 
